@@ -19,3 +19,7 @@ A WebUSB-based Game Boy Printer emulator that runs entirely in your browser. Pri
 3.  **Connect**: Click "Connect" and select your device.
 4.  **Print**: Go to the "Print" menu on your Game Boy Camera and print a photo.
 5.  **Download**: The image will appear on the screen! Download or View it in your browser.
+
+## Troubleshooting
+- Currently when refreshing the web page most of the time the pico/usb device needs to be reset. Unplugging or pressing reset on the USB adapter should acomplish this
+- If on linux you may need to edit Udev rules. See here https://stackoverflow.com/questions/30983221/chrome-app-fails-to-open-usb-device
