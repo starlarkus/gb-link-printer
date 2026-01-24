@@ -202,6 +202,21 @@ class GameBoyPrinter {
                     return;
                 }
 
+                // Only accept valid printer commands - reject everything else
+                // This prevents image data from being misinterpreted as commands
+                const validCommands = [
+                    PrinterCommand.INIT,      // 0x01
+                    PrinterCommand.PRINT,     // 0x02
+                    PrinterCommand.DATA,      // 0x04
+                    PrinterCommand.BREAK,     // 0x08
+                    PrinterCommand.INQUIRY    // 0x0F
+                ];
+
+                if (!validCommands.includes(byte)) {
+                    // Unknown byte - skip it and stay in WAIT_COMMAND
+                    return;
+                }
+
                 this.currentCommand = byte;
                 this.parserState = ParserState.WAIT_COMPRESSION;
 
@@ -214,11 +229,16 @@ class GameBoyPrinter {
                     this.updateStatus('Init - buffer cleared', 'status-receiving');
                 } else if (this.currentCommand === PrinterCommand.INQUIRY) {
                     this.updateStatus('Status inquiry', 'status-idle');
-                    // Let it continue to WAIT_COMPRESSION - firmware still sends compression+length
                 }
                 break;
 
             case ParserState.WAIT_COMPRESSION:
+                // Compression byte should only be 0x00 (uncompressed) or 0x01 (RLE)
+                if (byte !== 0x00 && byte !== 0x01) {
+                    // Invalid compression byte - parser is desynchronized
+                    this.parserState = ParserState.WAIT_COMMAND;
+                    return;
+                }
                 this.currentCompression = byte;
                 this.parserState = ParserState.WAIT_LEN_LOW;
                 break;
