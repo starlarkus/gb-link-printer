@@ -99,10 +99,13 @@ class Serial {
                 }
 
                 return dev.open();
-            }).then(() => {
-                // Reset the device to clear any stale state
-                return device.reset();
-            }).then(() => {
+            }).then(async () => {
+                // Try to reset the device to clear stale state (may fail on Windows)
+                try {
+                    await device.reset();
+                } catch (e) {
+                    // Reset not supported on this platform, continue anyway
+                }
                 return device.selectConfiguration(1);
             }).then(() => {
                 this.getEndpoints(device.configuration.interfaces);
