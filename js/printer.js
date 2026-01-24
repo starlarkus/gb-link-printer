@@ -56,6 +56,8 @@ class GameBoyPrinter {
         this.currentLength = 0;
         this.currentDataIndex = 0;
         this.currentPacketData = [];
+        this.lastDataTime = 0;  // Timestamp of last data received
+        this.recentBytes = [];  // Buffer for detecting "RESET" marker from firmware
 
         // UI elements
         this.statusText = document.getElementById('status-text');
@@ -140,6 +142,7 @@ class GameBoyPrinter {
     }
 
     async printerLoop() {
+        const PRINT_TIMEOUT_MS = 2000;  // Reset if no data for 2 seconds during a print
 
         while (this.running && this.serial && this.serial.ready) {
             try {
@@ -148,7 +151,7 @@ class GameBoyPrinter {
 
                 if (result.data.byteLength > 0) {
                     const bytes = new Uint8Array(result.data.buffer);
-
+                    this.lastDataTime = Date.now();
 
                     for (let i = 0; i < bytes.length; i++) {
                         this.processFirmwareByte(bytes[i]);
@@ -164,6 +167,19 @@ class GameBoyPrinter {
                     if (!err.toString().includes('timeout')) {
                         console.error('Read error:', err);
                     }
+
+                    // Check if we have stale partial data (print was canceled)
+                    if (this.printData.length > 0 && this.lastDataTime > 0) {
+                        const timeSinceLastData = Date.now() - this.lastDataTime;
+                        if (timeSinceLastData > PRINT_TIMEOUT_MS) {
+                            console.log(`Print timeout: discarding ${this.printData.length} bytes of incomplete data`);
+                            this.printData = [];
+                            this.parserState = ParserState.WAIT_COMMAND;
+                            this.currentPacketData = [];
+                            this.updateStatus('Print canceled - ready', 'status-idle');
+                        }
+                    }
+
                     await new Promise(r => setTimeout(r, 50));
                 }
             }
@@ -171,9 +187,30 @@ class GameBoyPrinter {
     }
 
     processFirmwareByte(byte) {
+        // Check for "ABORTPRINT" abort marker from firmware (10 ASCII bytes)
+        // Keep a sliding window of recent bytes to detect the sequence
+        this.recentBytes.push(byte);
+        if (this.recentBytes.length > 10) {
+            this.recentBytes.shift();
+        }
+
+        // Check if recent bytes spell "ABORTPRINT"
+        const abortMarker = [0x41, 0x42, 0x4F, 0x52, 0x54, 0x50, 0x52, 0x49, 0x4E, 0x54];
+        // A=0x41, B=0x42, O=0x4F, R=0x52, T=0x54, P=0x50, R=0x52, I=0x49, N=0x4E, T=0x54
+        if (this.recentBytes.length === 10 &&
+            this.recentBytes.every((b, i) => b === abortMarker[i])) {
+            console.log(`ABORTPRINT marker received: discarding ${this.printData.length} bytes, resetting parser`);
+            this.printData = [];
+            this.currentPacketData = [];
+            this.recentBytes = [];
+            this.parserState = ParserState.WAIT_COMMAND;
+            this.updateStatus('Print aborted - ready', 'status-idle');
+            return;
+        }
+
         // Parse structured data from firmware
-        // IMPORTANT: Only check for markers in WAIT_COMMAND state!
-        // 0xFF and 0xFE can appear as normal bytes in image data
+        // IMPORTANT: Only check for 0xFF/0xFE markers in WAIT_COMMAND state!
+        // These bytes can appear as normal bytes in image data
         switch (this.parserState) {
             case ParserState.WAIT_START:
                 // Waiting for 0xFF start marker
@@ -183,8 +220,14 @@ class GameBoyPrinter {
                 // Check for protocol markers ONLY in this state
                 // (these bytes can appear as data in other states)
                 if (byte === 0xFF) {
-                    // Start marker - reset parser state
+                    // Start/reset marker from firmware
+                    // Clear all buffers (handles both initial connect and print abort)
+                    if (this.printData.length > 0) {
+                        console.log(`Reset marker: discarding ${this.printData.length} bytes`);
+                    }
+                    this.printData = [];
                     this.currentPacketData = [];
+                    this.updateStatus('Ready for print', 'status-idle');
                     return;
                 }
 
@@ -216,6 +259,7 @@ class GameBoyPrinter {
                     // Unknown byte - skip it and stay in WAIT_COMMAND
                     return;
                 }
+
 
                 this.currentCommand = byte;
                 this.parserState = ParserState.WAIT_COMPRESSION;
@@ -285,6 +329,13 @@ class GameBoyPrinter {
     processPacket() {
         switch (this.currentCommand) {
             case PrinterCommand.INIT:
+                // INIT signals the start of a new print session
+                // Clear any stale data from a canceled print
+                if (this.printData.length > 0) {
+                    console.log(`INIT: clearing ${this.printData.length} bytes from previous incomplete print`);
+                }
+                this.printData = [];
+                this.currentPacketData = [];
                 this.updateStatus('Ready for print data', 'status-idle');
                 break;
 
