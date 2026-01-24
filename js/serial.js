@@ -1,0 +1,185 @@
+/**
+ * WebUSB Serial Communication for Game Boy Link Cable
+ */
+
+const fromHexString = hexString =>
+    new Uint8Array(hexString.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+
+function buf2hex(buffer) {
+    return [...new Uint8Array(buffer)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+const toHexString = bytes =>
+    bytes.reduce((str, byte) => str + byte.toString(16).padStart(2, '0'), '');
+
+class Serial {
+    constructor() {
+        this.buffer = [];
+        this.send_active = false;
+    }
+
+    static getPorts() {
+        return navigator.usb.getDevices().then(devices => {
+            return devices;
+        });
+    }
+
+    static requestPort() {
+        const filters = [
+            { 'vendorId': 0x239A }, // Adafruit boards
+            { 'vendorId': 0xcafe }, // TinyUSB example
+        ];
+        return navigator.usb.requestDevice({ 'filters': filters }).then(
+            device => {
+                return device;
+            }
+        );
+    }
+
+    getEndpoints(interfaces) {
+        interfaces.forEach(element => {
+            var alternates = element.alternates;
+            alternates.forEach(elementalt => {
+                if (elementalt.interfaceClass === 0xFF) {
+                    this.ifNum = element.interfaceNumber;
+                    elementalt.endpoints.forEach(elementendpoint => {
+                        if (elementendpoint.direction === "out") {
+                            this.epOut = elementendpoint.endpointNumber;
+                        }
+                        if (elementendpoint.direction === "in") {
+                            this.epIn = elementendpoint.endpointNumber;
+                        }
+                    });
+                }
+            })
+        })
+    }
+
+    async getDevice() {
+        let device = null;
+        this.ready = false;
+
+        // Clean up any previously paired devices that may be in a stale state
+        // (e.g., from a page refresh without unplugging)
+        try {
+            const existingDevices = await navigator.usb.getDevices();
+            for (const dev of existingDevices) {
+                try {
+                    if (dev.opened) {
+                        // Try to release interface first if it was claimed
+                        if (dev.configuration) {
+                            for (const iface of dev.configuration.interfaces) {
+                                if (iface.claimed) {
+                                    await dev.releaseInterface(iface.interfaceNumber);
+                                }
+                            }
+                        }
+                        await dev.close();
+                    }
+                } catch (e) {
+                    // Ignore cleanup errors
+                }
+            }
+        } catch (e) {
+            // Ignore cleanup errors
+        }
+
+        return new Promise((resolve, reject) => {
+            Serial.requestPort().then(async (dev) => {
+                device = dev;
+                this.device = device;
+
+                // If device is already open (stale state), close it first
+                if (device.opened) {
+                    try {
+                        await device.close();
+                    } catch (e) {
+                        // Ignore
+                    }
+                }
+
+                return dev.open();
+            }).then(() => {
+                // Reset the device to clear any stale state
+                return device.reset();
+            }).then(() => {
+                return device.selectConfiguration(1);
+            }).then(() => {
+                this.getEndpoints(device.configuration.interfaces);
+            }).then(() => {
+                return device.claimInterface(this.ifNum);
+            }).then(() => {
+                return device.selectAlternateInterface(this.ifNum, 0);
+            }).then(() => {
+                return device.controlTransferOut({
+                    'requestType': 'class',
+                    'recipient': 'interface',
+                    'request': 0x22,
+                    'value': 0x01,
+                    'index': this.ifNum
+                })
+            }).then(() => {
+                this.ready = true;
+                this.device = device;
+                resolve();
+            }).catch(err => {
+                console.error("Device connection error:", err);
+                reject(err);
+            });
+        });
+    }
+
+    async disconnect() {
+        if (this.device && this.device.opened) {
+            try {
+                await this.device.controlTransferOut({
+                    'requestType': 'class',
+                    'recipient': 'interface',
+                    'request': 0x22,
+                    'value': 0x00,
+                    'index': this.ifNum
+                });
+                await this.device.releaseInterface(this.ifNum);
+                await this.device.close();
+            } catch (e) {
+                console.log("Disconnect error:", e);
+            }
+        }
+        this.ready = false;
+    }
+
+    read(num) {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(function () {
+                reject('Read timeout');
+            }, 5000);
+            this.device.transferIn(this.epIn, num).then(result => {
+                clearTimeout(timeout);
+                resolve(result);
+            },
+                error => {
+                    clearTimeout(timeout);
+                    console.error(error)
+                    reject(error);
+                });
+        });
+    }
+
+    send(data) {
+        return this.device.transferOut(this.epOut, data);
+    }
+
+    sendByte(byte) {
+        return this.send(new Uint8Array([byte]));
+    }
+
+    // Exchange a single byte - send and receive simultaneously
+    async exchangeByte(byteToSend) {
+        await this.send(new Uint8Array([byteToSend]));
+        const result = await this.read(1);
+        if (result.data.byteLength > 0) {
+            return result.data.getUint8(0);
+        }
+        return null;
+    }
+}
