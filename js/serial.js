@@ -60,21 +60,16 @@ class Serial {
         this.ready = false;
 
         // Clean up any previously paired devices that may be in a stale state
-        // (e.g., from a page refresh without unplugging)
         try {
             const existingDevices = await navigator.usb.getDevices();
             for (const dev of existingDevices) {
                 try {
                     if (dev.opened) {
-                        // Try to release interface first if it was claimed
-                        if (dev.configuration) {
-                            for (const iface of dev.configuration.interfaces) {
-                                if (iface.claimed) {
-                                    await dev.releaseInterface(iface.interfaceNumber);
-                                }
-                            }
+                        try {
+                            await dev.close();
+                        } catch (e) {
+                            // Ignore
                         }
-                        await dev.close();
                     }
                 } catch (e) {
                     // Ignore cleanup errors
@@ -89,7 +84,6 @@ class Serial {
                 device = dev;
                 this.device = device;
 
-                // If device is already open (stale state), close it first
                 if (device.opened) {
                     try {
                         await device.close();
@@ -100,7 +94,36 @@ class Serial {
 
                 return dev.open();
             }).then(async () => {
-                // Try to reset the device to clear stale state (may fail on Windows)
+                // FORCE RESET FIRMWARE STATE:
+                // Send "Stop" (0x00) immediately after open.
+                try {
+                    let vendorPayloadInterface = 0;
+                    // Attempt to find the vendor interface from config
+                    if (device.configurations && device.configurations.length > 0) {
+                        const config = device.configurations[0];
+                        for (const iface of config.interfaces) {
+                            const alternate = iface.alternates[0];
+                            if (alternate.interfaceClass === 0xFF) {
+                                vendorPayloadInterface = iface.interfaceNumber;
+                                break;
+                            }
+                        }
+                    }
+
+                    await device.controlTransferOut({
+                        'requestType': 'class',
+                        'recipient': 'interface',
+                        'request': 0x22,
+                        'value': 0x00, // STOP
+                        'index': vendorPayloadInterface
+                    });
+
+                    // Give firmware a moment to exit its loop
+                    await new Promise(r => setTimeout(r, 100));
+                } catch (e) {
+                    console.warn("Early force stop failed (non-fatal):", e);
+                }
+
                 // Try to reset the device to clear stale state (may fail on Windows)
                 if (device.reset) {
                     try {
@@ -112,28 +135,11 @@ class Serial {
                 return device.selectConfiguration(1);
             }).then(() => {
                 this.getEndpoints(device.configuration.interfaces);
-            }).then(() => {
                 return device.claimInterface(this.ifNum);
             }).then(() => {
                 return device.selectAlternateInterface(this.ifNum, 0);
-                return device.selectAlternateInterface(this.ifNum, 0);
             }).then(async () => {
-                // FORCE RESET FIRMWARE STATE:
-                // Send "Stop" (0x00) first to ensure firmware cleanly exits any previous mode loop
-                try {
-                    await device.controlTransferOut({
-                        'requestType': 'class',
-                        'recipient': 'interface',
-                        'request': 0x22,
-                        'value': 0x00, // STOP
-                        'index': this.ifNum
-                    });
-                    // Give firmware a moment to exit its loop and reset
-                    await new Promise(r => setTimeout(r, 100));
-                } catch (e) {
-                    console.warn("Force stop failed (non-fatal):", e);
-                }
-
+                // Send "Start" (0x01) to begin communication
                 return device.controlTransferOut({
                     'requestType': 'class',
                     'recipient': 'interface',
