@@ -101,10 +101,13 @@ class Serial {
                 return dev.open();
             }).then(async () => {
                 // Try to reset the device to clear stale state (may fail on Windows)
-                try {
-                    await device.reset();
-                } catch (e) {
-                    // Reset not supported on this platform, continue anyway
+                // Try to reset the device to clear stale state (may fail on Windows)
+                if (device.reset) {
+                    try {
+                        await device.reset();
+                    } catch (e) {
+                        console.warn("Device reset failed (non-fatal):", e);
+                    }
                 }
                 return device.selectConfiguration(1);
             }).then(() => {
