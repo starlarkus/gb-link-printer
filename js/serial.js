@@ -116,12 +116,29 @@ class Serial {
                 return device.claimInterface(this.ifNum);
             }).then(() => {
                 return device.selectAlternateInterface(this.ifNum, 0);
-            }).then(() => {
+                return device.selectAlternateInterface(this.ifNum, 0);
+            }).then(async () => {
+                // FORCE RESET FIRMWARE STATE:
+                // Send "Stop" (0x00) first to ensure firmware cleanly exits any previous mode loop
+                try {
+                    await device.controlTransferOut({
+                        'requestType': 'class',
+                        'recipient': 'interface',
+                        'request': 0x22,
+                        'value': 0x00, // STOP
+                        'index': this.ifNum
+                    });
+                    // Give firmware a moment to exit its loop and reset
+                    await new Promise(r => setTimeout(r, 100));
+                } catch (e) {
+                    console.warn("Force stop failed (non-fatal):", e);
+                }
+
                 return device.controlTransferOut({
                     'requestType': 'class',
                     'recipient': 'interface',
                     'request': 0x22,
-                    'value': 0x01,
+                    'value': 0x01, // START
                     'index': this.ifNum
                 })
             }).then(() => {
