@@ -82,11 +82,9 @@ class Serial {
             }).then(async () => {
                 // Try to reset the device to clear stale OS state
                 if (device.reset) {
-                    try {
-                        await device.reset();
-                    } catch (e) {
+                    await device.reset().catch(e => {
                         console.warn("Device reset failed (non-fatal):", e);
-                    }
+                    });
                 }
                 return device.selectConfiguration(1);
             }).then(() => {
