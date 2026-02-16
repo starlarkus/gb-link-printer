@@ -12,10 +12,66 @@ function buf2hex(buffer) {
 const toHexString = bytes =>
     bytes.reduce((str, byte) => str + byte.toString(16).padStart(2, '0'), '');
 
+function fwVersionAtLeast(version, minMajor, minMinor, minPatch) {
+    if (!version) return false;
+    const parts = version.split('.').map(Number);
+    const [major = 0, minor = 0, patch = 0] = parts;
+    if (major !== minMajor) return major > minMajor;
+    if (minor !== minMinor) return minor > minMinor;
+    return patch >= minPatch;
+}
+
+// Magic packet prefix (32 bytes shared by all magic packets)
+const MAGIC_PREFIX = new Uint8Array([
+    0xCA, 0xFE, 0xCA, 0xFE, 0xCA, 0xFE, 0xCA, 0xFE,
+    0xCA, 0xFE, 0xCA, 0xFE, 0xCA, 0xFE, 0xCA, 0xFE,
+    0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF,
+    0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF
+]);
+
+function buildVswitchPacket(suffix) {
+    const packet = new Uint8Array(36);
+    packet.set(MAGIC_PREFIX);
+    packet.set(new TextEncoder().encode(suffix), 32);
+    return packet;
+}
+
+const VSWITCH_5V_PACKET = buildVswitchPacket('V5V0');
+
+// LED magic packet: 32-byte prefix + "LEDS" + R, G, B, on/off = 40 bytes
+const LED_PREFIX = new Uint8Array([
+    ...MAGIC_PREFIX,
+    0x4C, 0x45, 0x44, 0x53  // "LEDS"
+]);
+
+function buildLedPacket(r, g, b, on) {
+    const packet = new Uint8Array(40);
+    packet.set(LED_PREFIX);
+    packet[36] = r;
+    packet[37] = g;
+    packet[38] = b;
+    packet[39] = on ? 1 : 0;
+    return packet;
+}
+
 class Serial {
     constructor() {
         this.buffer = [];
         this.send_active = false;
+        this.firmwareVersion = null;
+    }
+
+    async setLed(r, g, b, on = true) {
+        if (!this.ready || !fwVersionAtLeast(this.firmwareVersion, 1, 0, 6)) return false;
+        const packet = buildLedPacket(r, g, b, on);
+        await this.device.transferOut(this.epOut, packet);
+        try {
+            await Promise.race([
+                this.device.transferIn(this.epIn, 64),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 500))
+            ]);
+        } catch (e) { /* ack timeout is non-fatal */ }
+        return true;
     }
 
     static getPorts() {
@@ -120,7 +176,35 @@ class Serial {
                     'value': 0x01, // START
                     'index': this.ifNum
                 })
-            }).then(() => {
+            }).then(async () => {
+                // Read firmware version string (new firmware sends "GBLINK:x.x.x\n" on connect)
+                try {
+                    const result = await Promise.race([
+                        device.transferIn(this.epIn, 64),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 500))
+                    ]);
+                    if (result.status === 'ok' && result.data && result.data.byteLength > 0) {
+                        const str = new TextDecoder().decode(result.data);
+                        if (str.startsWith('GBLINK:')) {
+                            this.firmwareVersion = str.trim().substring(7);
+                            console.log("Firmware version:", this.firmwareVersion);
+                        }
+                    }
+                } catch (e) {
+                    console.log("No firmware version (old firmware)");
+                }
+
+                // Switch to 5V mode for Game Boy (printer is always GB)
+                if (fwVersionAtLeast(this.firmwareVersion, 1, 0, 6)) {
+                    await device.transferOut(this.epOut, VSWITCH_5V_PACKET);
+                    try {
+                        await Promise.race([
+                            device.transferIn(this.epIn, 64),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 500))
+                        ]);
+                    } catch (e) { /* ack timeout is non-fatal */ }
+                }
+
                 this.ready = true;
                 this.device = device;
                 resolve();
