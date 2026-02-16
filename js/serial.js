@@ -185,6 +185,7 @@ class Serial {
 
                 // Switch to 5V mode for Game Boy (printer is always GB)
                 if (fwVersionAtLeast(device, 1, 0, 6)) {
+                    console.log("Switching to 5V mode for Game Boy");
                     await device.transferOut(this.epOut, VSWITCH_5V_PACKET);
                     try {
                         await device.transferIn(this.epIn, 64);
