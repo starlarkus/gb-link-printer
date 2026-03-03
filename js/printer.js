@@ -104,16 +104,24 @@ class GameBoyPrinter {
             this.serial = new Serial();
             await this.serial.getDevice();
 
-            // Send printer mode magic sequence
             this.updateStatus('Activating printer mode...', 'status-receiving');
-            await this.serial.send(PRINTER_MODE_MAGIC);
 
-            // Wait for acknowledgment (0x50 = 'P')
-            const ackResult = await this.serial.read(1);
-            if (ackResult.data.byteLength > 0) {
-                const ack = ackResult.data.getUint8(0);
-                if (ack !== 0x50) {
-                    console.warn("Unexpected printer mode ack:", ack);
+            if (this.serial.isNewFirmware) {
+                // New firmware: single SET_MODE command enters printer mode directly.
+                // Small delay to ensure firmware has re-armed command endpoint after voltage switch
+                await new Promise(r => setTimeout(r, 100));
+                console.log("Sending EnterGBPrinter command (0x03)");
+                await this.serial.sendCommand(new Uint8Array([NEW_CMD.ENTER_GB_PRINTER]));
+                console.log("EnterGBPrinter sent successfully");
+            } else {
+                // Old firmware: send printer mode magic packet, wait for 0x50 ack
+                await this.serial.send(PRINTER_MODE_MAGIC);
+                const ackResult = await this.serial.read(1);
+                if (ackResult.data.byteLength > 0) {
+                    const ack = ackResult.data.getUint8(0);
+                    if (ack !== 0x50) {
+                        console.warn("Unexpected printer mode ack:", ack);
+                    }
                 }
             }
 

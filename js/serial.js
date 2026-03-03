@@ -1,5 +1,6 @@
 /**
  * WebUSB Serial Communication for Game Boy Link Cable
+ * Supports old (reconfigurable, TinyUSB, VID 0xCAFE) and new (GBLink, Zephyr, VID 0x2FE3) firmware.
  */
 
 const fromHexString = hexString =>
@@ -57,10 +58,21 @@ function buildLedPacket(r, g, b, on) {
     return packet;
 }
 
+// New firmware command constants (GBLink unified firmware, Zephyr)
+const NEW_CMD = {
+    SET_MODE:          0x00,
+    CANCEL:            0x01,
+    MODE_GB_LINK:      0x02,
+    ENTER_GB_PRINTER:  0x03,  // Single-byte command — no second byte needed
+    SET_VOLTAGE_5V:    0x41,
+};
+
 class Serial {
     constructor() {
         this.buffer = [];
         this.send_active = false;
+        this.isNewFirmware = false;
+        this.epCmdOut = null;  // Command OUT endpoint (new firmware only)
     }
 
     async setLed(r, g, b, on = true) {
@@ -85,7 +97,8 @@ class Serial {
     static requestPort() {
         const filters = [
             { 'vendorId': 0x239A }, // Adafruit boards
-            { 'vendorId': 0xcafe }, // TinyUSB example
+            { 'vendorId': 0xcafe }, // TinyUSB example (old reconfigurable firmware)
+            { 'vendorId': 0x2FE3 }, // Zephyr default VID (new GBLink firmware)
         ];
         return navigator.usb.requestDevice({ 'filters': filters }).then(
             device => {
@@ -100,17 +113,47 @@ class Serial {
             alternates.forEach(elementalt => {
                 if (elementalt.interfaceClass === 0xFF) {
                     this.ifNum = element.interfaceNumber;
-                    elementalt.endpoints.forEach(elementendpoint => {
-                        if (elementendpoint.direction === "out") {
-                            this.epOut = elementendpoint.endpointNumber;
-                        }
-                        if (elementendpoint.direction === "in") {
-                            this.epIn = elementendpoint.endpointNumber;
-                        }
-                    });
+
+                    // Sort endpoints by number so we reliably get EP1 before EP2
+                    const inEps = elementalt.endpoints
+                        .filter(ep => ep.direction === 'in')
+                        .sort((a, b) => a.endpointNumber - b.endpointNumber);
+                    const outEps = elementalt.endpoints
+                        .filter(ep => ep.direction === 'out')
+                        .sort((a, b) => a.endpointNumber - b.endpointNumber);
+
+                    if (this.isNewFirmware && inEps.length >= 2 && outEps.length >= 2) {
+                        // EP1 OUT = command endpoint (sends commands to firmware)
+                        // EP2 OUT = data endpoint (sends SPI data)
+                        // EP2 IN  = data endpoint (receives printer data / SPI results)
+                        this.epCmdOut = outEps[0].endpointNumber;
+                        this.epOut = outEps[1].endpointNumber;
+                        this.epIn = inEps[1].endpointNumber;
+                        console.log(`New firmware endpoints: cmd=EP${this.epCmdOut} data=EP${this.epOut}/EP${this.epIn}`);
+                    } else {
+                        // Old firmware: single in/out pair
+                        elementalt.endpoints.forEach(elementendpoint => {
+                            if (elementendpoint.direction === "out") {
+                                this.epOut = elementendpoint.endpointNumber;
+                            }
+                            if (elementendpoint.direction === "in") {
+                                this.epIn = elementendpoint.endpointNumber;
+                            }
+                        });
+                    }
                 }
             })
         })
+    }
+
+    // Send to command endpoint (new firmware) or data endpoint (old firmware)
+    async sendCommand(data) {
+        const buf = data instanceof Uint8Array ? data : new Uint8Array(data);
+        if (this.isNewFirmware && this.epCmdOut != null) {
+            await this.device.transferOut(this.epCmdOut, buf);
+        } else {
+            await this.device.transferOut(this.epOut, buf);
+        }
     }
 
     async getDevice() {
@@ -132,6 +175,12 @@ class Serial {
                 device = dev;
                 this.device = device;
 
+                // Detect firmware type by Vendor ID
+                this.isNewFirmware = (device.vendorId === 0x2FE3);
+                console.log(this.isNewFirmware
+                    ? 'New firmware (GBLink Unified, Zephyr) detected'
+                    : `Old firmware (reconfigurable, TinyUSB) detected — VID 0x${device.vendorId.toString(16)}`);
+
                 if (device.opened) {
                     try { await device.close(); } catch (e) { }
                 }
@@ -139,7 +188,9 @@ class Serial {
                 return dev.open();
             }).then(async () => {
                 // Try to reset the device to clear stale OS state
-                if (device.reset) {
+                // (only for old firmware — the new firmware drops its
+                //  USB connection on reset, breaking the session)
+                if (!this.isNewFirmware && device.reset) {
                     await device.reset().catch(e => {
                         console.warn("Device reset failed (non-fatal):", e);
                     });
@@ -153,15 +204,18 @@ class Serial {
             }).then(() => {
                 return device.selectAlternateInterface(this.ifNum, 0);
             }).then(async () => {
-                // FORCE FIRMWARE RESET:
-                // Send "Stop" (0x00) first to ensure firmware cleanly exits any previous mode loop.
-                // We do this AFTER claiming the interface so controlTransferOut works without error.
+                if (this.isNewFirmware) {
+                    // New firmware: no CDC handshake needed — command endpoint is used directly
+                    return;
+                }
+
+                // Old firmware: CDC stop/start handshake
                 try {
                     await device.controlTransferOut({
                         'requestType': 'class',
                         'recipient': 'interface',
                         'request': 0x22,
-                        'value': 0x00, // STOP
+                        'value': 0x00, // STOP — ensure firmware exits any previous mode
                         'index': this.ifNum
                     });
                     // Give firmware a moment to exit its loop and re-enter main loop
@@ -170,26 +224,30 @@ class Serial {
                     console.warn("Force stop failed:", e);
                 }
 
-                // Send "Start" (0x01) to begin communication
                 return device.controlTransferOut({
                     'requestType': 'class',
                     'recipient': 'interface',
                     'request': 0x22,
                     'value': 0x01, // START
                     'index': this.ifNum
-                })
+                });
             }).then(async () => {
-                // Check firmware version from USB device descriptor (bcdDevice)
-                const fwVer = `${device.deviceVersionMajor}.${device.deviceVersionMinor}.${device.deviceVersionSubminor}`;
-                console.log("Firmware version (bcdDevice):", fwVer);
+                if (this.isNewFirmware) {
+                    // Switch to 5V mode for Game Boy via command endpoint
+                    console.log("Switching to 5V mode for Game Boy (new firmware)");
+                    await this.sendCommand(new Uint8Array([NEW_CMD.SET_VOLTAGE_5V]));
+                } else {
+                    // Old firmware: check version then switch via magic packet
+                    const fwVer = `${device.deviceVersionMajor}.${device.deviceVersionMinor}.${device.deviceVersionSubminor}`;
+                    console.log("Firmware version (bcdDevice):", fwVer);
 
-                // Switch to 5V mode for Game Boy (printer is always GB)
-                if (fwVersionAtLeast(device, 1, 0, 6)) {
-                    console.log("Switching to 5V mode for Game Boy");
-                    await device.transferOut(this.epOut, VSWITCH_5V_PACKET);
-                    try {
-                        await device.transferIn(this.epIn, 64);
-                    } catch (e) { /* ack read is non-fatal */ }
+                    if (fwVersionAtLeast(device, 1, 0, 6)) {
+                        console.log("Switching to 5V mode for Game Boy");
+                        await device.transferOut(this.epOut, VSWITCH_5V_PACKET);
+                        try {
+                            await device.transferIn(this.epIn, 64);
+                        } catch (e) { /* ack read is non-fatal */ }
+                    }
                 }
 
                 this.ready = true;
@@ -205,13 +263,19 @@ class Serial {
     async disconnect() {
         if (this.device && this.device.opened) {
             try {
-                await this.device.controlTransferOut({
-                    'requestType': 'class',
-                    'recipient': 'interface',
-                    'request': 0x22,
-                    'value': 0x00,
-                    'index': this.ifNum
-                });
+                if (this.isNewFirmware) {
+                    // New firmware: send cancel via command endpoint
+                    await this.sendCommand(new Uint8Array([NEW_CMD.CANCEL]));
+                } else {
+                    // Old firmware: CDC stop control transfer
+                    await this.device.controlTransferOut({
+                        'requestType': 'class',
+                        'recipient': 'interface',
+                        'request': 0x22,
+                        'value': 0x00,
+                        'index': this.ifNum
+                    });
+                }
                 await this.device.releaseInterface(this.ifNum);
                 await this.device.close();
             } catch (e) {
