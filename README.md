@@ -9,7 +9,7 @@ A WebUSB-based Game Boy Printer emulator that runs entirely in your browser. Pri
 - **Download**: Save your printed photos as PNGs.
 
 ## Requirements
-- A USB Game Boy Link Cable adapter with the [reconfigurable firmware](https://github.com/starlarkus/gb-link-firmware-reconfigurable)
+- A USB Game Boy Link Cable adapter with [GBLink firmware](https://github.com/starlarkus/GBLink-Firmware) or [reconfigurable firmware (legacy)](https://github.com/starlarkus/gb-link-firmware-reconfigurable)
 - A WebUSB-compatible browser (Chrome, Edge, Opera)
 
 ## How to Use
