@@ -33,9 +33,10 @@
                     <hr />
                     <h4>Connect your Game Boy</h4>
                     <p>Connect the USB adapter, then press print on your Game Boy Camera.</p>
-                    <button id="btn-connect" class="btn btn-lg btn-secondary">Connect</button>
+                    <button id="btn-connect" class="btn btn-lg btn-secondary">Connect (USB)</button>
+                    <button id="btn-connect-serial" class="btn btn-lg btn-secondary">Connect (Serial)</button>
                     <br />
-                    <small>Version: 2.1.0</small>
+                    <small>Version: 2.2.0</small>
                 </div>
 
                 <!-- Screen: Connecting -->
@@ -71,8 +72,8 @@
 
                 <!-- Screen: No WebUSB -->
                 <div id="screen-no-webusb" class="screen connect">
-                    <h2>Sorry, your browser does not support WebUSB!</h2>
-                    <p>Please use Chrome, Edge, or another Chromium-based browser.</p>
+                    <h2>Sorry, your browser supports neither WebUSB nor WebSerial!</h2>
+                    <p>Use Chrome/Edge (WebUSB or WebSerial) or Firefox 151+ (WebSerial).</p>
                 </div>
 
             </div>
@@ -93,6 +94,7 @@
 
     <!-- Scripts -->
     <script src="js/serial.js"></script>
+    <script src="js/serial_ws.js"></script>
     <script src="js/printer.js"></script>
 </body>
 

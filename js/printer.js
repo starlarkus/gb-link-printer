@@ -69,7 +69,13 @@ class GameBoyPrinter {
     }
 
     bindEvents() {
-        document.getElementById('btn-connect').addEventListener('click', () => this.connect());
+        document.getElementById('btn-connect').addEventListener('click', () => this.connect('usb'));
+        const serialBtn = document.getElementById('btn-connect-serial');
+        if (serialBtn) {
+            serialBtn.addEventListener('click', () => this.connect('serial'));
+            if (!('serial' in navigator)) serialBtn.disabled = true;
+        }
+        if (!('usb' in navigator)) document.getElementById('btn-connect').disabled = true;
         document.getElementById('btn-disconnect').addEventListener('click', () => this.disconnect());
         document.getElementById('btn-retry').addEventListener('click', () => this.showScreen('connect'));
         document.getElementById('btn-download-all').addEventListener('click', () => this.downloadAllImages());
@@ -97,11 +103,11 @@ class GameBoyPrinter {
         this.dataReceived.textContent = `Data received: ${this.totalBytesReceived} bytes | Print buffer: ${this.printData.length} bytes`;
     }
 
-    async connect() {
+    async connect(kind = 'usb') {
         this.showScreen('connecting');
 
         try {
-            this.serial = new Serial();
+            this.serial = (kind === 'serial') ? new SerialWS() : new Serial();
             await this.serial.getDevice();
 
             this.updateStatus('Activating printer mode...', 'status-receiving');
@@ -159,6 +165,7 @@ class GameBoyPrinter {
 
                 if (result.data.byteLength > 0) {
                     const bytes = new Uint8Array(result.data.buffer);
+                    console.log('CHUNK', [...bytes].map(b => b.toString(16).padStart(2, '0')).join(' '));
                     this.lastDataTime = Date.now();
 
                     for (let i = 0; i < bytes.length; i++) {
@@ -487,7 +494,7 @@ class GameBoyPrinter {
 
 // Initialize when page loads
 document.addEventListener('DOMContentLoaded', () => {
-    if (!navigator.usb) {
+    if (!navigator.usb && !navigator.serial) {
         document.getElementById('screen-no-webusb').style.display = 'block';
         return;
     }
