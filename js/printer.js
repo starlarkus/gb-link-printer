@@ -69,13 +69,17 @@ class GameBoyPrinter {
     }
 
     bindEvents() {
-        document.getElementById('btn-connect').addEventListener('click', () => this.connect('usb'));
-        const serialBtn = document.getElementById('btn-connect-serial');
-        if (serialBtn) {
-            serialBtn.addEventListener('click', () => this.connect('serial'));
-            if (!('serial' in navigator)) serialBtn.disabled = true;
+        // Prefer WebUSB; fall back to WebSerial only when WebUSB is unavailable.
+        const hasUsb = ('usb' in navigator);
+        const hasSerial = ('serial' in navigator);
+        this.transport = hasUsb ? 'usb' : (hasSerial ? 'serial' : null);
+
+        const connectBtn = document.getElementById('btn-connect');
+        if (this.transport) {
+            connectBtn.textContent = this.transport === 'usb' ? 'Connect USB' : 'Connect Serial';
+            connectBtn.addEventListener('click', () => this.connect(this.transport));
         }
-        if (!('usb' in navigator)) document.getElementById('btn-connect').disabled = true;
+
         document.getElementById('btn-disconnect').addEventListener('click', () => this.disconnect());
         document.getElementById('btn-retry').addEventListener('click', () => this.showScreen('connect'));
         document.getElementById('btn-download-all').addEventListener('click', () => this.downloadAllImages());
